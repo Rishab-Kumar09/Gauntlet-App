@@ -1,4 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart'
+    hide EmailAuthProvider, GoogleAuthProvider;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_ui_auth/firebase_ui_auth.dart';
+import 'package:firebase_ui_oauth_google/firebase_ui_oauth_google.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,30 +14,60 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
+  Future<void> _initializeApp() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    // Load .env file
+    await dotenv.load(fileName: ".env");
+
+    // Initialize Firebase
+    await Firebase.initializeApp(
+      options: FirebaseOptions(
+        apiKey: dotenv.env['FIREBASE_API_KEY']!,
+        authDomain: dotenv.env['FIREBASE_AUTH_DOMAIN']!,
+        projectId: dotenv.env['FIREBASE_PROJECT_ID']!,
+        storageBucket: dotenv.env['FIREBASE_STORAGE_BUCKET']!,
+        messagingSenderId: dotenv.env['FIREBASE_MESSAGING_SENDER_ID']!,
+        appId: dotenv.env['FIREBASE_APP_ID']!,
+      ),
+    );
+
+    print('✅ Firebase initialized successfully!');
+    print('📦 Project ID: ${dotenv.env['FIREBASE_PROJECT_ID']}');
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+    return FutureBuilder(
+      future: _initializeApp(),
+      builder: (context, snapshot) {
+        // Show error if initialization fails
+        if (snapshot.hasError) {
+          return MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: Text('Initialization Error: ${snapshot.error}'),
+              ),
+            ),
+          );
+        }
+
+        // Show app once initialization is complete
+        if (snapshot.connectionState == ConnectionState.done) {
+          return MaterialApp(
+            title: 'Gauntlet App',
+            theme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+            ),
+            home: const MyHomePage(title: 'Gauntlet App'),
+          );
+        }
+
+        // Show loading indicator while initializing
+        return const MaterialApp(
+          home: Scaffold(body: Center(child: CircularProgressIndicator())),
+        );
+      },
     );
   }
 }
@@ -54,17 +91,82 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  User? _currentUser;
+  String _dbStatus = 'Not tested';
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+  @override
+  void initState() {
+    super.initState();
+    // Listen to auth state changes - keeps user signed in
+    FirebaseAuth.instance.authStateChanges().listen((User? user) {
+      setState(() {
+        _currentUser = user;
+      });
+      if (user != null) {
+        print('✅ User signed in: ${user.displayName}');
+        print('📸 Photo URL: ${user.photoURL}');
+      } else {
+        print('👤 No user signed in');
+      }
     });
+  }
+
+  void _signInWithGoogle() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) => SignInScreen(
+              providers: [GoogleProvider(clientId: ''), EmailAuthProvider()],
+              actions: [
+                AuthStateChangeAction<SignedIn>((context, state) {
+                  // Automatically close sign-in screen after successful login
+                  Navigator.of(context).pop();
+                }),
+              ],
+              headerBuilder: (context, constraints, shrinkOffset) {
+                return const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Welcome to Gauntlet App',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 10),
+                      Text('Sign in to continue'),
+                    ],
+                  ),
+                );
+              },
+            ),
+      ),
+    );
+  }
+
+  Future<void> _signOut() async {
+    await FirebaseAuth.instance.signOut();
+    print('👋 Signed out');
+  }
+
+  Future<void> _testDatabase() async {
+    try {
+      var snapshot =
+          await FirebaseFirestore.instance.collection('users').limit(1).get();
+
+      setState(() {
+        _dbStatus = '✅ Read Success (${snapshot.docs.length} docs found)';
+      });
+      print('✅ Database read successful!');
+    } catch (e) {
+      setState(() {
+        _dbStatus = '❌ ${e.toString()}';
+      });
+      print('❌ Database error: $e');
+    }
   }
 
   @override
@@ -104,19 +206,101 @@ class _MyHomePageState extends State<MyHomePage> {
           // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 20,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Firebase.apps.isNotEmpty ? Colors.green : Colors.red,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  Firebase.apps.isNotEmpty
+                      ? 'Firebase Connected'
+                      : 'Firebase Disconnected',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _testDatabase,
+              child: const Text('Test Database Read'),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _dbStatus,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color:
+                    _dbStatus.contains('✅')
+                        ? Colors.green
+                        : _dbStatus.contains('❌')
+                        ? Colors.red
+                        : Colors.grey,
+              ),
+            ),
+            const SizedBox(height: 20),
+            if (_currentUser == null)
+              ElevatedButton.icon(
+                onPressed: _signInWithGoogle,
+                icon: const Icon(Icons.login),
+                label: const Text('Sign In'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 12,
+                  ),
+                ),
+              )
+            else
+              Column(
+                children: [
+                  CircleAvatar(
+                    radius: 40,
+                    backgroundColor: Colors.grey[300],
+                    backgroundImage:
+                        _currentUser!.photoURL != null &&
+                                _currentUser!.photoURL!.isNotEmpty
+                            ? NetworkImage(_currentUser!.photoURL!)
+                            : null,
+                    child:
+                        _currentUser!.photoURL == null ||
+                                _currentUser!.photoURL!.isEmpty
+                            ? const Icon(
+                              Icons.person,
+                              size: 40,
+                              color: Colors.grey,
+                            )
+                            : null,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _currentUser!.displayName ?? 'User',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    _currentUser!.email ?? '',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: _signOut,
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Sign Out'),
+                  ),
+                ],
+              ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
